@@ -147,7 +147,8 @@ export const SpendingTransactionsTab = forwardRef<SpendingTransactionsTabHandle>
     const urlEndDate = searchParams.get("to");
     const urlStatus = searchParams.get("status") as CashActivityStatusFilter | null;
     const urlTypes = searchParams.get("types");
-    const urlAccounts = searchParams.get("accounts");
+    const urlAccount = searchParams.get("account");
+    const urlAccounts = searchParams.get("accounts") ?? urlAccount;
     const urlEvents = searchParams.get("events");
     const urlSearchQuery = searchParams.get("q");
     const urlAmountMin = searchParams.get("amountMin");
@@ -265,6 +266,9 @@ export const SpendingTransactionsTab = forwardRef<SpendingTransactionsTabHandle>
       setOrDelete("status", statusFilter === "all" ? null : statusFilter);
       setSet("types", selectedTypes);
       setSet("accounts", selectedAccounts);
+      if (searchParams.get("tab") === "spending") {
+        next.delete("account");
+      }
       setSet("category", selectedCategories);
       setSet("subcategory", selectedSubcategories);
       setSet("events", selectedEvents);

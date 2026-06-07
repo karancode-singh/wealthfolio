@@ -33,7 +33,11 @@ import {
   SpendingTransactionsTab,
   type SpendingTransactionsTabHandle,
 } from "@/features/spending/components/spending-transactions-tab";
-import { clearActivityUrlFilters, resolveActivityUrlFilters } from "./utils/url-filters";
+import {
+  clearActivityUrlFilters,
+  resolveActivityTabFromUrlFilters,
+  resolveActivityUrlFilters,
+} from "./utils/url-filters";
 
 const ActivityPage = () => {
   const [showForm, setShowForm] = useState(false);
@@ -152,6 +156,29 @@ const ActivityPage = () => {
       setSearchParams(next, { replace: true });
     }
   }, [urlTab, isSpendingSettingsLoading, isSpendingEnabled, searchParams, setSearchParams]);
+
+  useEffect(() => {
+    if (!isSpendingEnabled || isSpendingSettingsLoading) return;
+
+    const targetTab = resolveActivityTabFromUrlFilters(searchParams, spendingAccountIds);
+    if (!targetTab || urlTab === targetTab) return;
+
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.set("tab", targetTab);
+        return next;
+      },
+      { replace: true },
+    );
+  }, [
+    isSpendingEnabled,
+    isSpendingSettingsLoading,
+    searchParams,
+    setSearchParams,
+    spendingAccountIds,
+    urlTab,
+  ]);
 
   const spendingTabRef = useRef<SpendingTransactionsTabHandle | null>(null);
 
@@ -716,7 +743,6 @@ const ActivityPage = () => {
         views={views}
         defaultView="investments"
         persistKey="activity-page-tab"
-        title="Activity"
       />
       {sharedModals}
     </>
