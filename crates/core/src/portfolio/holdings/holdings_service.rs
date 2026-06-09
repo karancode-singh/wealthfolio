@@ -356,6 +356,124 @@ impl HoldingsService {
         holdings
     }
 
+    async fn apply_historical_cost_basis_best_effort(
+        &self,
+        account_id: &str,
+        base_currency: &str,
+        holdings: &mut [Holding],
+        asset_id_filter: Option<&str>,
+    ) {
+        if holdings.is_empty() {
+            return;
+        }
+
+        let Some(lot_repository) = &self.lot_repository else {
+            return;
+        };
+
+        let security_asset_ids: HashSet<String> = holdings
+            .iter()
+            .filter(|holding| holding.holding_type == HoldingType::Security)
+            .filter_map(|holding| holding.instrument.as_ref().map(|instrument| &instrument.id))
+            .filter(|asset_id| asset_id_filter.map_or(true, |filter| asset_id.as_str() == filter))
+            .cloned()
+            .collect();
+
+        if security_asset_ids.is_empty() {
+            return;
+        }
+
+        let open_lots_result = if let Some(asset_id) = asset_id_filter {
+            lot_repository
+                .get_open_lots_for_account_asset(account_id, asset_id)
+                .await
+        } else {
+            lot_repository.get_open_lots_for_account(account_id).await
+        };
+
+        let open_lots = match open_lots_result {
+            Ok(lots) => lots,
+            Err(e) => {
+                warn!(
+                    "Failed to load open lots for account {} while applying historical cost basis: {}",
+                    account_id, e
+                );
+                return;
+            }
+        };
+        if open_lots.is_empty() {
+            return;
+        }
+
+        let requested_base_currency = normalize_currency_code(base_currency);
+        let mut cost_basis_base_by_asset: HashMap<String, Decimal> = HashMap::new();
+        let mut mismatched_base_assets: HashSet<String> = HashSet::new();
+        let mut invalid_base_cost_assets: HashSet<String> = HashSet::new();
+
+        for lot in open_lots {
+            if !security_asset_ids.contains(&lot.asset_id) {
+                continue;
+            }
+
+            let lot_base_currency = normalize_currency_code(&lot.base_currency);
+            if lot_base_currency != requested_base_currency {
+                mismatched_base_assets.insert(lot.asset_id.clone());
+                continue;
+            }
+
+            let remaining_cost_basis_base = match lot.remaining_cost_basis_base.parse::<Decimal>() {
+                Ok(value) => value,
+                Err(e) => {
+                    invalid_base_cost_assets.insert(lot.asset_id.clone());
+                    warn!(
+                            "Skipping historical cost basis seeding for asset {} in account {} because an open lot has invalid base cost basis: {}",
+                            lot.asset_id, account_id, e
+                        );
+                    continue;
+                }
+            };
+            cost_basis_base_by_asset
+                .entry(lot.asset_id)
+                .and_modify(|total| *total += remaining_cost_basis_base)
+                .or_insert(remaining_cost_basis_base);
+        }
+
+        for asset_id in invalid_base_cost_assets {
+            cost_basis_base_by_asset.remove(&asset_id);
+        }
+
+        for asset_id in mismatched_base_assets {
+            cost_basis_base_by_asset.remove(&asset_id);
+            warn!(
+                "Skipping historical cost basis seeding for asset {} in account {} because lot base currency does not match requested base currency {}.",
+                asset_id, account_id, base_currency
+            );
+        }
+
+        if cost_basis_base_by_asset.is_empty() {
+            return;
+        }
+
+        for holding in holdings {
+            if holding.holding_type != HoldingType::Security {
+                continue;
+            }
+
+            let Some(asset_id) = holding.instrument.as_ref().map(|instrument| &instrument.id)
+            else {
+                continue;
+            };
+            let Some(cost_basis_base) = cost_basis_base_by_asset.get(asset_id) else {
+                continue;
+            };
+            let Some(cost_basis) = &mut holding.cost_basis else {
+                continue;
+            };
+
+            cost_basis.base = *cost_basis_base;
+        }
+    }
+
     async fn value_holdings_best_effort(&self, account_id: &str, holdings: &mut [Holding]) {
         if holdings.is_empty() {
             debug!(
@@ -718,6 +836,13 @@ impl HoldingsServiceTrait for HoldingsService {
                 true,
             )
             .await;
+        self.apply_historical_cost_basis_best_effort(
+            account_id,
+            base_currency,
+            &mut holdings,
+            None,
+        )
+        .await;
         self.value_holdings_best_effort(account_id, &mut holdings)
             .await;
         self.apply_realized_gains_best_effort(account_id, &mut holdings)
@@ -912,6 +1037,13 @@ impl HoldingsServiceTrait for HoldingsService {
                 true,
             )
             .await;
+        self.apply_historical_cost_basis_best_effort(
+            account_id,
+            base_currency,
+            &mut holdings,
+            Some(asset_id),
+        )
+        .await;
         self.value_holdings_best_effort(account_id, &mut holdings)
             .await;
         self.apply_realized_gains_best_effort(account_id, &mut holdings)
@@ -1121,6 +1253,7 @@ mod tests {
         NewAsset, QuoteMode, UpdateAssetProfile,
     };
     use crate::errors::Error;
+    use crate::lots::{AssetLotView, LotClosure, LotRecord};
     use crate::portfolio::snapshot::{AccountStateSnapshot, Position, SnapshotRecalcMode};
     use crate::snapshot::Lot;
     use crate::taxonomies::{
@@ -1135,7 +1268,10 @@ mod tests {
     use rust_decimal_macros::dec;
     use serde_json::json;
     use std::collections::{HashMap, VecDeque};
-    use std::sync::Arc;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
 
     struct MockAssetService {
         assets: HashMap<String, Asset>,
@@ -1329,6 +1465,110 @@ mod tests {
         }
     }
 
+    struct MockLotRepository {
+        open_lots: Vec<LotRecord>,
+        open_lots_calls: Arc<AtomicUsize>,
+        open_lots_for_asset_calls: Arc<AtomicUsize>,
+    }
+
+    impl MockLotRepository {
+        fn new(open_lots: Vec<LotRecord>) -> Self {
+            Self {
+                open_lots,
+                open_lots_calls: Arc::new(AtomicUsize::new(0)),
+                open_lots_for_asset_calls: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn open_lots_calls(&self) -> Arc<AtomicUsize> {
+            self.open_lots_calls.clone()
+        }
+
+        fn open_lots_for_asset_calls(&self) -> Arc<AtomicUsize> {
+            self.open_lots_for_asset_calls.clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LotRepositoryTrait for MockLotRepository {
+        async fn replace_lots_for_account(
+            &self,
+            _account_id: &str,
+            _lots: &[LotRecord],
+        ) -> Result<()> {
+            unimplemented!("unused in holdings service tests")
+        }
+
+        async fn get_open_lots_for_account(&self, _account_id: &str) -> Result<Vec<LotRecord>> {
+            self.open_lots_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.open_lots.clone())
+        }
+
+        async fn get_open_lots_for_account_asset(
+            &self,
+            _account_id: &str,
+            asset_id: &str,
+        ) -> Result<Vec<LotRecord>> {
+            self.open_lots_for_asset_calls
+                .fetch_add(1, Ordering::SeqCst);
+            Ok(self
+                .open_lots
+                .iter()
+                .filter(|lot| lot.asset_id == asset_id)
+                .cloned()
+                .collect())
+        }
+
+        async fn get_all_open_lots(&self) -> Result<Vec<LotRecord>> {
+            unimplemented!("unused in holdings service tests")
+        }
+
+        async fn get_lots_as_of_date(
+            &self,
+            _account_ids: &[String],
+            _date: NaiveDate,
+        ) -> Result<Vec<LotRecord>> {
+            unimplemented!("unused in holdings service tests")
+        }
+
+        async fn get_all_lots_for_account(&self, _account_id: &str) -> Result<Vec<LotRecord>> {
+            unimplemented!("unused in holdings service tests")
+        }
+
+        async fn get_lots_for_asset(&self, _asset_id: &str) -> Result<Vec<LotRecord>> {
+            unimplemented!("unused in holdings service tests")
+        }
+
+        async fn get_asset_lot_view(
+            &self,
+            _asset_id: &str,
+            _include_snapshot_positions: bool,
+        ) -> Result<Vec<AssetLotView>> {
+            unimplemented!("unused in holdings service tests")
+        }
+
+        async fn get_all_lots(&self) -> Result<Vec<LotRecord>> {
+            unimplemented!("unused in holdings service tests")
+        }
+
+        async fn sync_lots_for_account(
+            &self,
+            _account_id: &str,
+            _open_lots: &[LotRecord],
+            _closures: &[LotClosure],
+        ) -> Result<()> {
+            unimplemented!("unused in holdings service tests")
+        }
+
+        async fn get_open_position_quantities(&self) -> Result<HashMap<String, Decimal>> {
+            unimplemented!("unused in holdings service tests")
+        }
+
+        fn count_lots(&self) -> Result<i64> {
+            unimplemented!("unused in holdings service tests")
+        }
+    }
+
     struct EmptyTaxonomyService;
 
     #[async_trait::async_trait]
@@ -1456,6 +1696,41 @@ mod tests {
         }
     }
 
+    fn test_lot_record(
+        account_id: &str,
+        asset_id: &str,
+        base_currency: &str,
+        remaining_cost_basis_base: Decimal,
+    ) -> LotRecord {
+        let now = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+        LotRecord {
+            id: format!("LOT-{asset_id}-{base_currency}"),
+            account_id: account_id.to_string(),
+            asset_id: asset_id.to_string(),
+            open_date: "2024-01-01".to_string(),
+            open_activity_id: Some(format!("ACT-{asset_id}")),
+            original_quantity: "1".to_string(),
+            remaining_quantity: "1".to_string(),
+            cost_per_unit: "100".to_string(),
+            original_cost_basis: "100".to_string(),
+            remaining_cost_basis: "100".to_string(),
+            original_cost_basis_base: remaining_cost_basis_base.to_string(),
+            remaining_cost_basis_base: remaining_cost_basis_base.to_string(),
+            fee_allocated: "0".to_string(),
+            fee_allocated_base: "0".to_string(),
+            currency: "USD".to_string(),
+            base_currency: base_currency.to_string(),
+            fx_rate_to_base: "1".to_string(),
+            cost_basis_method: "FIFO".to_string(),
+            split_ratio: "1".to_string(),
+            is_closed: false,
+            close_date: None,
+            close_activity_id: None,
+            created_at: now.clone(),
+            updated_at: now,
+        }
+    }
+
     fn test_service(
         snapshot: AccountStateSnapshot,
         assets: Vec<Asset>,
@@ -1556,6 +1831,192 @@ mod tests {
             .await
             .unwrap();
         assert!(holding.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_holdings_seeds_historical_base_cost_basis_from_open_lots_once() {
+        let account_id = "acc-1";
+        let asset_id = "AAPL";
+        let mut position = test_position(account_id, asset_id);
+        position.average_cost = dec!(1000);
+        position.total_cost_basis = dec!(1000);
+
+        let snapshot = AccountStateSnapshot {
+            account_id: account_id.to_string(),
+            currency: "USD".to_string(),
+            positions: HashMap::from([(asset_id.to_string(), position)]),
+            ..Default::default()
+        };
+        let lot_repository = MockLotRepository::new(vec![
+            test_lot_record(account_id, asset_id, "EUR", dec!(600)),
+            test_lot_record(account_id, asset_id, "EUR", dec!(400)),
+        ]);
+        let open_lots_calls = lot_repository.open_lots_calls();
+        let service = test_service(
+            snapshot,
+            vec![test_asset(asset_id, "AAPL", InstrumentType::Equity)],
+            HashMap::from([(asset_id.to_string(), dec!(1100))]),
+        )
+        .with_lot_repository(Arc::new(lot_repository));
+
+        let holdings = service.get_holdings(account_id, "EUR").await.unwrap();
+
+        assert_eq!(open_lots_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(holdings.len(), 1);
+        assert_eq!(holdings[0].cost_basis.as_ref().unwrap().base, dec!(1000));
+    }
+
+    #[tokio::test]
+    async fn get_holdings_skips_historical_base_cost_basis_on_lot_base_currency_mismatch() {
+        let account_id = "acc-1";
+        let asset_id = "AAPL";
+        let mut position = test_position(account_id, asset_id);
+        position.average_cost = dec!(1000);
+        position.total_cost_basis = dec!(1000);
+
+        let snapshot = AccountStateSnapshot {
+            account_id: account_id.to_string(),
+            currency: "USD".to_string(),
+            positions: HashMap::from([(asset_id.to_string(), position)]),
+            ..Default::default()
+        };
+        let lot_repository = MockLotRepository::new(vec![
+            test_lot_record(account_id, asset_id, "EUR", dec!(600)),
+            test_lot_record(account_id, asset_id, "CAD", dec!(400)),
+        ]);
+        let service = test_service(
+            snapshot,
+            vec![test_asset(asset_id, "AAPL", InstrumentType::Equity)],
+            HashMap::from([(asset_id.to_string(), dec!(1100))]),
+        )
+        .with_lot_repository(Arc::new(lot_repository));
+
+        let holdings = service.get_holdings(account_id, "EUR").await.unwrap();
+
+        assert_eq!(holdings.len(), 1);
+        assert_eq!(holdings[0].cost_basis.as_ref().unwrap().base, Decimal::ZERO);
+    }
+
+    #[tokio::test]
+    async fn get_holdings_skips_historical_base_cost_basis_on_invalid_lot_basis() {
+        let account_id = "acc-1";
+        let asset_id = "AAPL";
+        let mut position = test_position(account_id, asset_id);
+        position.average_cost = dec!(1000);
+        position.total_cost_basis = dec!(1000);
+
+        let snapshot = AccountStateSnapshot {
+            account_id: account_id.to_string(),
+            currency: "USD".to_string(),
+            positions: HashMap::from([(asset_id.to_string(), position)]),
+            ..Default::default()
+        };
+        let mut invalid_lot = test_lot_record(account_id, asset_id, "EUR", dec!(600));
+        invalid_lot.remaining_cost_basis_base = "not-a-decimal".to_string();
+        let lot_repository = MockLotRepository::new(vec![
+            test_lot_record(account_id, asset_id, "EUR", dec!(400)),
+            invalid_lot,
+        ]);
+        let service = test_service(
+            snapshot,
+            vec![test_asset(asset_id, "AAPL", InstrumentType::Equity)],
+            HashMap::from([(asset_id.to_string(), dec!(1100))]),
+        )
+        .with_lot_repository(Arc::new(lot_repository));
+
+        let holdings = service.get_holdings(account_id, "EUR").await.unwrap();
+
+        assert_eq!(holdings.len(), 1);
+        assert_eq!(holdings[0].cost_basis.as_ref().unwrap().base, Decimal::ZERO);
+    }
+
+    #[tokio::test]
+    async fn get_holding_loads_open_lots_for_requested_asset_only() {
+        let account_id = "acc-1";
+        let asset_id = "AAPL";
+        let other_asset_id = "MSFT";
+        let mut positions = HashMap::new();
+        positions.insert(asset_id.to_string(), test_position(account_id, asset_id));
+        positions.insert(
+            other_asset_id.to_string(),
+            test_position(account_id, other_asset_id),
+        );
+
+        let snapshot = AccountStateSnapshot {
+            account_id: account_id.to_string(),
+            currency: "USD".to_string(),
+            positions,
+            ..Default::default()
+        };
+        let lot_repository = MockLotRepository::new(vec![
+            test_lot_record(account_id, asset_id, "EUR", dec!(1000)),
+            test_lot_record(account_id, other_asset_id, "EUR", dec!(2000)),
+        ]);
+        let open_lots_calls = lot_repository.open_lots_calls();
+        let open_lots_for_asset_calls = lot_repository.open_lots_for_asset_calls();
+        let service = test_service(
+            snapshot,
+            vec![
+                test_asset(asset_id, "AAPL", InstrumentType::Equity),
+                test_asset(other_asset_id, "MSFT", InstrumentType::Equity),
+            ],
+            HashMap::from([
+                (asset_id.to_string(), dec!(1100)),
+                (other_asset_id.to_string(), dec!(2200)),
+            ]),
+        )
+        .with_lot_repository(Arc::new(lot_repository));
+
+        let holding = service
+            .get_holding(account_id, asset_id, "EUR")
+            .await
+            .unwrap()
+            .expect("holding should exist");
+
+        assert_eq!(open_lots_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(open_lots_for_asset_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(holding.cost_basis.as_ref().unwrap().base, dec!(1000));
+    }
+
+    #[tokio::test]
+    async fn get_holdings_does_not_seed_historical_base_cost_basis_for_alternative_assets() {
+        let account_id = "acc-1";
+        let asset_id = "PROPERTY-1";
+        let mut asset = test_asset(asset_id, "Property", InstrumentType::Equity);
+        asset.kind = AssetKind::Property;
+
+        let mut position = test_position(account_id, asset_id);
+        position.total_cost_basis = dec!(1000);
+        position.is_alternative = true;
+
+        let snapshot = AccountStateSnapshot {
+            account_id: account_id.to_string(),
+            currency: "USD".to_string(),
+            positions: HashMap::from([(asset_id.to_string(), position)]),
+            ..Default::default()
+        };
+        let lot_repository = MockLotRepository::new(vec![test_lot_record(
+            account_id,
+            asset_id,
+            "EUR",
+            dec!(1000),
+        )]);
+        let open_lots_calls = lot_repository.open_lots_calls();
+        let open_lots_for_asset_calls = lot_repository.open_lots_for_asset_calls();
+        let service = test_service(
+            snapshot,
+            vec![asset],
+            HashMap::from([(asset_id.to_string(), dec!(1100))]),
+        )
+        .with_lot_repository(Arc::new(lot_repository));
+
+        let holdings = service.get_holdings(account_id, "EUR").await.unwrap();
+
+        assert_eq!(holdings.len(), 1);
+        assert_eq!(holdings[0].holding_type, HoldingType::AlternativeAsset);
+        assert_eq!(holdings[0].cost_basis.as_ref().unwrap().base, Decimal::ZERO);
+        assert_eq!(open_lots_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(open_lots_for_asset_calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]

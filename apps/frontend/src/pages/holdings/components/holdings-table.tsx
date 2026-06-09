@@ -400,12 +400,14 @@ const getColumns = (
       const holding = row.original;
       const valueBase = showTotalReturn ? holding.totalGain?.base : holding.dayChange?.base;
       const pct = showTotalReturn ? holding.totalGainPct : holding.dayChangePct;
-
-      const { value, currency } = getDisplayValueAndCurrency(
-        holding,
-        valueBase,
-        showConvertedValues,
-      );
+      const { value, currency } = showTotalReturn
+        ? {
+            value: showConvertedValues
+              ? (holding.totalGain?.base ?? 0)
+              : (holding.totalGain?.local ?? 0),
+            currency: showConvertedValues ? holding.baseCurrency : holding.localCurrency,
+          }
+        : getDisplayValueAndCurrency(holding, valueBase, showConvertedValues);
 
       return (
         <div className="flex min-h-[40px] flex-col items-end justify-center px-4">

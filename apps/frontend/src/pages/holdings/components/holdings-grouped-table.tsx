@@ -207,8 +207,13 @@ function HoldingRow({
   // For liabilities, display value as negative
   const displayValue = holding.isLiability ? -Math.abs(marketValue) : marketValue;
 
-  const valueBase = showTotalReturn ? holding.totalGain?.base : holding.dayChange?.base;
-  const gainValue = showConvertedValues ? valueBase : safeDivide(valueBase ?? 0, fxRate);
+  const gainValue = showTotalReturn
+    ? showConvertedValues
+      ? (holding.totalGain?.base ?? 0)
+      : (holding.totalGain?.local ?? 0)
+    : showConvertedValues
+      ? (holding.dayChange?.base ?? 0)
+      : safeDivide(holding.dayChange?.base ?? 0, fxRate);
   const gainPct = showTotalReturn ? holding.totalGainPct : holding.dayChangePct;
 
   return (

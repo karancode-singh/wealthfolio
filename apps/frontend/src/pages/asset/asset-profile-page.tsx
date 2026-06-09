@@ -614,14 +614,16 @@ export const AssetProfilePage = () => {
         : realizedLots.length > 0 && realizedCostBasisFromLots > 0
           ? realizedPnlFromLots / realizedCostBasisFromLots
           : null;
-    const acquisitionCostBasisBase = assetLots
-      .filter(
-        (lot) => lot.source === "TRANSACTION_LOT" && !lot.isClosed && lot.costBasisBase != null,
-      )
-      .reduce((sum, lot) => sum + Number(lot.costBasisBase ?? 0), 0);
+    const hasOpenTransactionLotWithBase = assetLots.some(
+      (lot) => lot.source === "TRANSACTION_LOT" && !lot.isClosed && lot.costBasisBase != null,
+    );
     const fxEffect =
-      acquisitionCostBasisBase > 0 && holding?.costBasis?.base != null
-        ? Number(holding.costBasis.base) - acquisitionCostBasisBase
+      hasOpenTransactionLotWithBase &&
+      holding?.unrealizedGain?.base != null &&
+      holding?.unrealizedGain?.local != null &&
+      holding?.fxRate != null
+        ? Number(holding.unrealizedGain.base) -
+          Number(holding.unrealizedGain.local) * Number(holding.fxRate)
         : null;
     const totalPnl =
       holding?.totalGain?.local != null ? Number(holding.totalGain.local) : realizedPnl;

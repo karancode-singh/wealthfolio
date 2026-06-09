@@ -261,6 +261,26 @@ impl LotRepositoryTrait for LotsRepository {
         Ok(rows.into_iter().map(LotRecord::from).collect())
     }
 
+    async fn get_open_lots_for_account_asset(
+        &self,
+        account_id: &str,
+        asset_id: &str,
+    ) -> Result<Vec<LotRecord>> {
+        use crate::schema::lots::dsl;
+
+        let account_id = account_id.to_string();
+        let asset_id = asset_id.to_string();
+        let mut conn = get_connection(&self.pool)?;
+        let rows: Vec<LotRecordDB> = dsl::lots
+            .filter(dsl::account_id.eq(&account_id))
+            .filter(dsl::asset_id.eq(&asset_id))
+            .filter(dsl::is_closed.eq(0))
+            .load(&mut conn)
+            .map_err(StorageError::from)?;
+
+        Ok(rows.into_iter().map(LotRecord::from).collect())
+    }
+
     async fn get_all_open_lots(&self) -> Result<Vec<LotRecord>> {
         use crate::schema::lots::dsl;
 
