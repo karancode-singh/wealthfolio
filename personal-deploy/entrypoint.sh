@@ -19,7 +19,7 @@ dbs:
         endpoint: ${LITESTREAM_REPLICA_ENDPOINT}
         access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
         secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
-        force-path-style: true
+        force-path-style: false
         sync-interval: 1s
 EOF
 

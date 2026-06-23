@@ -10,7 +10,7 @@ dbs:
         endpoint: ${LITESTREAM_REPLICA_ENDPOINT}
         access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
         secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
-        # Force path-style for most S3-compatible providers (R2, B2, MinIO)
-        force-path-style: true
+        # Tigris uses virtual-hosted-style (like AWS S3)
+        force-path-style: false
         # Sync interval — how often WAL frames are pushed (default 1s is fine)
         sync-interval: 1s
