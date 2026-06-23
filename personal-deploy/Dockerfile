@@ -5,12 +5,12 @@ FROM wealthfolio/wealthfolio:latest
 
 USER root
 
-# Install Litestream (static binary) — v0.5.x has native Tigris support
-ARG LITESTREAM_VERSION=0.5.8
+# Install Litestream (static binary)
+ARG LITESTREAM_VERSION=v0.3.13
 ARG TARGETARCH=amd64
 RUN apk add --no-cache wget ca-certificates && \
     wget -qO /tmp/litestream.tar.gz \
-      "https://github.com/benbjohnson/litestream/releases/download/v${LITESTREAM_VERSION}/litestream-${LITESTREAM_VERSION}-linux-x86_64.tar.gz" && \
+      "https://github.com/benbjohnson/litestream/releases/download/${LITESTREAM_VERSION}/litestream-${LITESTREAM_VERSION}-linux-${TARGETARCH}.tar.gz" && \
     tar -xzf /tmp/litestream.tar.gz -C /usr/local/bin && \
     rm /tmp/litestream.tar.gz && \
     apk del wget
