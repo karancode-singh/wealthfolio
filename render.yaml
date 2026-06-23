@@ -36,7 +36,7 @@ services:
       - key: LITESTREAM_REPLICA_BUCKET
         sync: false  # Your Tigris bucket name, e.g. wealthfolio-backup
       - key: LITESTREAM_REPLICA_ENDPOINT
-        value: "https://t3.storage.dev"
+        value: "t3.storage.dev"
       - key: LITESTREAM_ACCESS_KEY_ID
         sync: false  # Tigris access key (tid_...)
       - key: LITESTREAM_SECRET_ACCESS_KEY
