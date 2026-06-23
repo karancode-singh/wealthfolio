@@ -1,0 +1,16 @@
+# Litestream configuration for replicating SQLite to S3-compatible storage (Tigris).
+# All values use environment variables so secrets stay out of the image.
+
+dbs:
+  - path: ${WF_DB_PATH:-/data/wealthfolio.db}
+    replicas:
+      - type: s3
+        bucket: ${LITESTREAM_REPLICA_BUCKET}
+        path: wealthfolio
+        endpoint: ${LITESTREAM_REPLICA_ENDPOINT}
+        access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+        secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
+        # Force path-style for most S3-compatible providers (R2, B2, MinIO)
+        force-path-style: true
+        # Sync interval — how often WAL frames are pushed (default 1s is fine)
+        sync-interval: 1s

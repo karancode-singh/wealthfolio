@@ -1,0 +1,43 @@
+# Render Blueprint — deploy this repo as a Docker web service.
+# https://render.com/docs/blueprint-spec
+#
+# Usage:
+#   1. Push this repo to GitHub
+#   2. In Render dashboard: New > Blueprint > connect repo > select branch
+#   3. Render reads this file and creates the service
+#   4. Set the environment variables listed below in the Render dashboard
+
+services:
+  - type: web
+    name: wealthfolio
+    runtime: docker
+    plan: free
+    dockerfilePath: ./personal-deploy/Dockerfile
+    dockerContext: ./personal-deploy
+    envVars:
+      # === Wealthfolio server config ===
+      # Render expects Docker services to listen on port 10000 by default
+      - key: WF_LISTEN_ADDR
+        value: "0.0.0.0:10000"
+      - key: WF_DB_PATH
+        value: "/data/wealthfolio.db"
+      - key: WF_STATIC_DIR
+        value: "dist"
+      - key: WF_CORS_ALLOW_ORIGINS
+        sync: false  # Set this to your Render URL, e.g. https://wealthfolio-xxxx.onrender.com
+      - key: WF_SECRET_KEY
+        sync: false  # Set manually — generate with: openssl rand -base64 32
+      - key: WF_AUTH_PASSWORD_HASH
+        sync: false  # Set manually — see README for generation instructions
+      - key: WF_AUTH_TOKEN_TTL_MINUTES
+        value: "480"
+
+      # === Litestream / S3 replica config (Tigris — free, no card required) ===
+      - key: LITESTREAM_REPLICA_BUCKET
+        sync: false  # Your Tigris bucket name, e.g. wealthfolio-backup
+      - key: LITESTREAM_REPLICA_ENDPOINT
+        value: "https://t3.storage.dev"
+      - key: LITESTREAM_ACCESS_KEY_ID
+        sync: false  # Tigris access key (tid_...)
+      - key: LITESTREAM_SECRET_ACCESS_KEY
+        sync: false  # Tigris secret key (tsec_...)
