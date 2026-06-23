@@ -162,6 +162,36 @@ Before completing any task:
 
 ---
 
+## Fork Workflow
+
+This is a fork of `wealthfolio/wealthfolio`.
+
+| Remote     | URL                                                  |
+| ---------- | ---------------------------------------------------- |
+| `origin`   | `https://github.com/karancode-singh/wealthfolio.git` |
+| `upstream` | `https://github.com/wealthfolio/wealthfolio.git`     |
+
+### Syncing with upstream
+
+```bash
+git fetch upstream
+git merge upstream/main   # or rebase: git rebase upstream/main
+```
+
+### Branch strategy
+
+- Always create feature branches off `main`.
+- Push to `origin` (the fork), never to `upstream`.
+- PRs to upstream go through GitHub's fork PR flow.
+
+### Keeping changes clean
+
+- Avoid modifying files unnecessarily—keeps merge conflicts minimal.
+- Commit fork-specific config (this file, `.env.example` tweaks) separately
+  from feature work so upstream PRs stay clean.
+
+---
+
 ## Plan Mode
 
 - Make plans extremely concise. Sacrifice grammar for brevity.
